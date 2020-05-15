@@ -19,17 +19,19 @@ static DWORD_PTR FIRST_ZOMBIE_Y_OFFSET = 0x394;
 static DWORD_PTR FIRST_ZOMBIE_Z_OFFSET = 0x398;
 
 //player addresses
-static DWORD_PTR PLAYER_ENTITY = 0x312000C;
+static DWORD_PTR PLAYER_ENTITY = 0x14E73C0;
 static DWORD_PTR PLAYER_HP = 0x1C8;
-static DWORD_PTR PLAYER_X_OFFSET = 0x60;
-static DWORD_PTR PLAYER_Y_OFFSET = 0x84;
-static DWORD_PTR PLAYER_Z_OFFSET = 0x88;
-static DWORD_PTR PLAYER_AIM_X = 0x2C7D6D4;
-static DWORD_PTR PLAYER_AIM_Y = 0x2C7D6D0;
+static DWORD_PTR PLAYER_X_OFFSET = 0x18;
+static DWORD_PTR PLAYER_Y_OFFSET = 0x1C;
+static DWORD_PTR PLAYER_Z_OFFSET = 0x20;
+static DWORD_PTR PLAYER_YAW = 0x2C7D6D4;
+static DWORD_PTR PLAYER_PITCH = 0x2C7D6D0;
 
 //executable name
 static std::wstring exeName = L"CoDWaW.exe";
 
+static float PI = 3.14159265358979323846;
+static float AIM_OFFSET = -105;
 
 
 DWORD_PTR getModule(HANDLE handle, std::wstring exeName)
@@ -61,41 +63,32 @@ DWORD_PTR getModule(HANDLE handle, std::wstring exeName)
 	return base; 
 }
 
-//Returns the players coordinates
+//Returns the players coordinates (xyz)
 std::vector<float> getPlayerInfo(HANDLE handle, DWORD_PTR base)
 {
 	DWORD_PTR playerEntity = base + PLAYER_ENTITY;
-	DWORD_PTR playerYZBase;
-	DWORD_PTR playerXBase;
+	DWORD_PTR player;
 	float playerX;
 	float playerY;
 	float playerZ;
 
 	std::vector<float> result; 
 
-	//Put the player base pointer for y and z into playerYZbase
-	if (ReadProcessMemory(handle, (LPCVOID*)playerEntity, &playerYZBase, sizeof(playerYZBase), NULL))
+	//Read the pointer to the player entity
+	if (ReadProcessMemory(handle, (LPCVOID*)playerEntity, &player, sizeof(player), NULL))
 	{
-		ReadProcessMemory(handle, (LPCVOID*)(playerYZBase + PLAYER_Y_OFFSET), &playerY, sizeof(playerYZBase), NULL);
-		ReadProcessMemory(handle, (LPCVOID*)(playerYZBase + PLAYER_Z_OFFSET), &playerZ, sizeof(playerYZBase), NULL);
-
-		//Put player base pointer for X into playerXbase
-		if (ReadProcessMemory(handle, (LPCVOID*)playerYZBase, &playerXBase, sizeof(playerXBase), NULL))
+		if (ReadProcessMemory(handle, (LPCVOID*)(player + PLAYER_X_OFFSET), &playerX, sizeof(playerX), NULL) &&
+			ReadProcessMemory(handle, (LPCVOID*)(player + PLAYER_Y_OFFSET), &playerY, sizeof(playerY), NULL) &&
+			ReadProcessMemory(handle, (LPCVOID*)(player + PLAYER_Z_OFFSET), &playerZ, sizeof(playerZ), NULL))
 		{
-			ReadProcessMemory(handle, (LPCVOID*)(playerXBase + PLAYER_X_OFFSET), &playerX, sizeof(playerXBase), NULL);
-			
 			result.push_back(playerX);
 			result.push_back(playerY);
 			result.push_back(playerZ);
 		}
 		else
 		{
-			std::cout << "Error finding x coordinate" << std::endl;
+			printf("Unable tor read player xyz");
 		}
-	}
-	else
-	{
-		std::cout << "Error finding y/z coordinate" << std::endl;
 	}
 	return result;
 }
@@ -172,17 +165,15 @@ std::vector<std::vector<float>> getZombieInfo(HANDLE handle, DWORD_PTR base)
 	return result;
 }
 
-//This function returns the vector that points from the player to the zombie and the magnitude
-std::vector<float> makeVector(std::vector<float> player, std::vector<float> zombie)
+//This function returns the vector that points from the player to the zombie and the magnitude   
+std::vector<float> makeAimVector(std::vector<float> player, std::vector<float> zombie)
 {
 	std::vector<float> result;
 	float mag = 0;
-	int diff; 
 	//vec from player to zombie
 	for (int i = 0; i < 3; i++) 
 	{
-		diff = player[i] - zombie[i];
-		result.push_back(diff);
+		result.push_back(zombie[i] - player[i]);
 	}
 
 	mag = sqrt((result[0] * result[0]) + (result[1] * result[1]) + (result[2] * result[2]));
@@ -191,6 +182,89 @@ std::vector<float> makeVector(std::vector<float> player, std::vector<float> zomb
 	return result; 
 }
 
+//Returns the index for the vector with the smallest magnitude
+int getSmallestVec(std::vector<std::vector<float>> vec)
+{
+	int index = -1;
+	float min = FLT_MAX;
+
+	for (unsigned int i = 0; i < vec.size(); i++) 
+	{
+		if (vec[i][3] < min)
+		{
+			index = i;
+			min = vec[i][3];
+		}
+	}
+	return index;
+}
+
+std::vector<float> calcAngles(std::vector<float> vec)
+{
+	std::vector<float> angles;
+	float yaw;
+	float pitch;
+	float x = vec[0];
+	float y = vec[1];
+	float z = vec[2];
+	float hyp = vec[3];
+	
+	if (x >= 0 && y >= 0) 
+	{
+		yaw = (atan(y / x) * 180 / PI);
+	}
+	else if(x <= 0 && y >= 0)
+	{
+		yaw = 180 - (atan(y / -x) * 180 / PI);
+	}
+	else if (x <= 0 && y <= 0)
+	{
+		yaw = 180 + (atan(y / x) * 180 / PI);
+	}
+	else if (x >= 0 && y <= 0)
+	{
+		yaw = 360 - (atan(-y / x) * 180 / PI);
+	}
+	
+	//We need to offset the yaw angle since the player view angle axis does not line up with the game axis
+	//We need to flip the sign since counter clockwise rotation is a 
+	yaw = yaw + AIM_OFFSET;
+	//Positive pitch corresponds to the player looking down so we need to flip the pitch angle
+	pitch = -(asin(z / hyp) * 180 / PI);
+
+	angles.push_back(yaw);
+	angles.push_back(pitch);
+
+	return angles;
+}
+
+int setAim(std::vector<float> vec, HANDLE handle, DWORD_PTR base)
+{
+	DWORD_PTR playerYawAddress = base + PLAYER_YAW;
+	DWORD_PTR playerPitchAddress = base + PLAYER_PITCH;
+	
+	float s1;
+	float s2;
+
+	float yaw = vec[0];
+	float pitch = vec[1];
+
+	if (ReadProcessMemory(handle, (LPCVOID*)(playerYawAddress), &s1, sizeof(s1), NULL) &&
+		ReadProcessMemory(handle, (LPCVOID*)(playerPitchAddress), &s2, sizeof(s2), NULL))
+	{
+		WriteProcessMemory(handle, (LPCVOID*)(playerYawAddress), &yaw, sizeof(yaw), NULL);
+		WriteProcessMemory(handle, (LPCVOID*)(playerPitchAddress), &pitch, sizeof(pitch), NULL);
+		printf("Actual : (%f,%f)| Calculated : (%f,%f)", s1, s2, yaw, pitch);
+	}
+	else 
+	{
+		printf("Unable to find yaw/pitch\n");
+		return 0;
+	}
+}
+
+
+//Takes a vector then returns 
 int main(void)
 {
 	std::vector<std::wstring> titles;
@@ -215,33 +289,46 @@ int main(void)
 		}
 
 		DWORD_PTR baseAddress = getModule(handle, exeName);
-		
+	
 		std::vector<float> player;
 		std::vector<std::vector<float>> zombies;
-
+		
 		while (1)
 		{
-			player = getPlayerInfo(handle, baseAddress);
-			zombies = getZombieInfo(handle, baseAddress);
-			std::vector<std::vector<float>> vectors;
-			//print player xyz
-			//printf("(%f,%f,%f)|||", player[0], player[1], player[2]);
-			
-			printf("===========================================================================\n");
-
-			for (unsigned int i = 0; i < zombies.size(); i++)
+			if (GetAsyncKeyState(0x50))
 			{
-				//printf("(%f,%f,%f)", zombies[i][0], zombies[i][1], zombies[i][2]);
-				vectors.push_back(makeVector(player, zombies[i]));
-			}
+				player = getPlayerInfo(handle, baseAddress);
+				zombies = getZombieInfo(handle, baseAddress);
+				std::vector<std::vector<float>> vectors;
+				//print player xyz
+				//printf("M:(%f,%f,%f)", player[0], player[1], player[2]);
 
-			for (unsigned int i = 0; i < vectors.size(); i++)
-			{
-				printf("(%f,%f,%f,%f)", vectors[i][0], vectors[i][1], vectors[i][2], vectors[i][3]);
+				for (unsigned int i = 0; i < zombies.size(); i++)
+				{
+					//printf("(%f,%f,%f)", zombies[i][0], zombies[i][1], zombies[i][2]);
+					vectors.push_back(makeAimVector(player, zombies[i]));
+				}
+
+				/*
+				for (unsigned int i = 0; i < vectors.size(); i++)
+				{
+					printf("(%f,%f,%f,%f)", vectors[i][0], vectors[i][1], vectors[i][2], vectors[i][3]);
+				}
+				*/
+
+				
+				int smallestVec = getSmallestVec(vectors);
+				if (smallestVec >= 0)
+				{
+					printf("AIM:(%f,%f,%f,%f)||", vectors[smallestVec][0], vectors[smallestVec][1], vectors[smallestVec][2], vectors[smallestVec][3]);
+					std::vector<float> angles = calcAngles(vectors[smallestVec]);
+					setAim(angles, handle, baseAddress);
+				}
+				
+				printf("\n");
+				
 			}
-			
-			printf("\n");
-			Sleep(100);
+			Sleep(10);
 		}
 		CloseHandle(handle);
 	}
